@@ -1,0 +1,183 @@
+---
+title: "Learning Human Activity"
+author: "Jacob Govshteyn"
+date: "Sun, December 21, 2014"
+output:
+    html_document
+ 
+---
+
+# synopsis
+
+Machine learning is used to predict activity type of test data set based on an algorithm trained from collected data of 6 participants. The goal is to predict 1 of 5 classes of a barbell lifting activity based on any of the 158 predictors. Since the predictor data collected consists mainly of Euclidean space variables, a hypothesis is that k-nearest neighbors algorithm should serve the best fit, but the random forest algorithm will also be used for comparison.
+
+# Data Processing  
+
+
+### Import required libraries.
+
+```{r libs, echo =TRUE, warning = FALSE, message = TRUE,  results='hide'}
+
+library(data.table)
+library(ggplot2)
+library(reshape)
+library(caret)
+library(gridExtra)
+library('doParallel')
+library("RCurl")
+cl <- makePSOCKcluster(4)
+registerDoParallel(cl)
+
+```
+
+
+### Loading Weight Lifting Exercise Dataset  
+
+* [Training Data Set](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+* [Testing Data Set](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+
+```{r download, echo =TRUE, warning = FALSE, message = TRUE,  results='hide'}
+
+
+#Create data directory to house unzipped activity files  
+if(!file.exists("./data")){
+  dir.create("./data")
+}
+
+## download and training data
+if(!file.exists("./data/pml-training.csv")){
+    fileUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(fileUrl, "./data/pml-training.csv")
+}
+
+## download and testing data
+if(!file.exists("./data/pml-testing.csv")){
+    fileUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(fileUrl, "./data/pml-testing.csv")
+}
+```
+
+
+
+### Declare parameters  
+
+Extract out unnecessary variables to address the analysis question
+
+```{r import, echo =TRUE, warning = FALSE, message = TRUE,  results='hide', cache=TRUE}
+
+data.train<-data.table(read.csv("./data/pml-training.csv",na.strings= c("NA", "","#DIV/0!")))
+data.test<-data.table(read.csv("./data/pml-testing.csv",na.strings= c("NA", "","#DIV/0!")))
+seed=1223
+split=.6
+```
+
+
+## Data subsetting
+
+### Prune predictore Data  
+
+Remove predictors with NA values and that have very few unique values relative to the number of samples
+
+```{r prune, echo =TRUE, warning = FALSE, message = TRUE,  results='hide', cache=FALSE}
+
+#join Epoch seconds and microseconds into on variable, raw_timestamp.
+#to correctly view full Epoch time we set precision to 16. 
+#10 digits for seconds(raw_timestamp_part_1)
+#6 digits for the microsecond(raw_timestamp_part_2)
+options(digits=16)
+data.train[,raw_timestamp:=raw_timestamp_part_1+raw_timestamp_part_2/1000000]
+data.test[,raw_timestamp:=raw_timestamp_part_1+raw_timestamp_part_2/1000000]
+#evaluate and prune nearZeroVar
+nsv <- nearZeroVar(data.train,saveMetrics=FALSE)
+setkey(data.train,X)
+#prune rows with NA values
+NAs<-data.train[,!complete.cases(t(data.train))]
+
+colExclude<-c("X","user_name","raw_timestamp_part_1",
+              "raw_timestamp_part_2","cvtd_timestamp",
+              "num_window",
+              "raw_timestamp")
+colNa<-names(data.train)[NAs]
+colExclude<-union(names(data.train)[nsv],colExclude)
+colExclude<-union(colNa,colExclude)
+colInclude<-setdiff(names(data.train), colExclude)
+data.train.pruned<-data.train[,colInclude,with = FALSE]
+data.test.pruned<-data.test[,setdiff(colInclude,c("classe")),with = FALSE]
+#data.train.pruned<-data.train.pruned[complete.cases(data.train.pruned), ]
+```
+
+
+### Pre-Processing 
+
+create data slice
+
+* 60% training
+* 40% cross-validation testing data 
+
+preprocess with principal components
+
+```{r preProcess, echo =TRUE, warning = FALSE, message = TRUE}
+set.seed(seed)
+inTrain = createDataPartition(data.train.pruned$classe, p = split, list = F)
+data.training.pruned = data.train.pruned[ inTrain[,1],]
+data.testing.pruned = data.train.pruned[-inTrain[,1],]
+preProc <- preProcess(data.training.pruned[,!"classe", with=FALSE],method="pca", thresh = .9)
+data.training.pc <- predict(preProc,data.training.pruned[,!"classe", with=FALSE])
+```
+
+
+## Model training
+
+## k-nearest neighbors model fit
+
+```{r modelFitKnn, echo =TRUE, warning = FALSE, message = TRUE,cache=TRUE}
+
+ctl <- trainControl(method = "cv", number = 4, allowParallel = TRUE)
+KnnmodelFit <- train(data.training.pruned$classe ~ .,
+                  method="knn",
+                  data.training.pc,
+                  trControl=ctl)
+```
+
+## Random forest model fit
+
+```{r modelFitRF, echo =TRUE, warning = FALSE, message = TRUE,cache=TRUE}
+
+ctl <- trainControl(method = "cv", number = 4, allowParallel = TRUE)
+RFmodelFit <- train(data.training.pruned$classe ~ .,
+                  method="rf",
+                  data.training.pc,
+                  trControl=ctl)
+```
+
+## Model cross validation 
+
+cross validate training data set 
+
+```{r validation, echo =TRUE, warning = FALSE, message = TRUE}
+data.testing.pc <- predict(preProc,data.testing.pruned[,!"classe", with=FALSE])
+confusionMatrix(data.testing.pruned$classe,predict(KnnmodelFit,data.testing.pc))
+confusionMatrix(data.testing.pruned$classe,predict(RFmodelFit,data.testing.pc))
+```
+
+# Result
+
+Random forest prediction algorithm proved to be a better fit for predicting barbell lifting activity type based on 158 predictors. With `97%` accuracy over `94%` with KNN, the random forest model will be used to predict the 20 test cases of the final test data set.
+
+## Prediction 
+
+
+```{r Predicting, echo=TRUE, warning = FALSE , fig.width=12, fig.height=15,  fig.show='asis', ,webgl=TRUE }
+data.test.pc <- predict(preProc,data.test.pruned)
+data.test.results<-predict(RFmodelFit,data.test.pc)
+data.test.results
+```
+
+--- 
+
+##  resources
+
+* [The data for this project come from this source](http://groupware.les.inf.puc-rio.br/har)
+
+
